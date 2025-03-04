@@ -3,7 +3,7 @@
 #include <WebSocketsServer.h>
 #include <SPI.h>
 #include <LoRa.h>
-#include <pgmspace.h>
+#include <SPIFFS.h>
 
 const char *ssid = "LoRa_Chat_AP_2";  
 const char *password = "12345678";  
@@ -15,6 +15,28 @@ WebSocketsServer webSocket(81);  // WebSockets on port 81
 #define RST 14
 #define DIO0 26
 
+String nodeID;
+
+void saveMessage(const String &message) {
+    File file = SPIFFS.open("/chatlog.txt", "a");
+    if (file) {
+        file.println(message);
+        file.close();
+    }
+}
+
+String loadMessages() {
+    File file = SPIFFS.open("/chatlog.txt", "r");
+    String history = "";
+    if (file) {
+        while (file.available()) {
+            history += file.readStringUntil('\n') + "<br>";
+        }
+        file.close();
+    }
+    return history;
+}
+
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
     if (type == WStype_TEXT) {
         String message = String((char *)payload);
@@ -24,7 +46,8 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t lengt
         LoRa.print(message);
         LoRa.endPacket();
 
-        webSocket.broadcastTXT("You: " + message);
+        saveMessage(message);
+        webSocket.broadcastTXT(message);
     }
 }
 
@@ -37,7 +60,8 @@ void receiveLoRaMessages() {
         }
         Serial.println("LoRa Received: " + receivedMsg);
 
-        webSocket.broadcastTXT("From Other Group: " + receivedMsg);
+        saveMessage(receivedMsg);
+        webSocket.broadcastTXT(receivedMsg);
     }
 }
 
@@ -45,21 +69,45 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 <html>
 <head>
     <title>LoRa Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      li {
+        list-style: none;
+      }
+    </style>
 </head>
 <body>
     <h1>LoRa Chat</h1>
+    <input id='nickname' placeholder='Enter nickname'>
     <input id='msg' placeholder='Type a message'>
     <button onclick='sendMessage()'>Send</button>
     <ul id='chat'></ul>
     <script>
-        var ws = new WebSocket('ws://' + location.host + ':81');
+        const ws = new WebSocket('ws://' + location.host + ':81');
+        const nodeID = "%NODE_ID%";  // Injected from ESP32
+        const chat = document.getElementById('chat');
+        const nameInput = document.getElementById('nickname');
+        const msgInput = document.getElementById('msg');
+
+        ws.onopen = () => {
+            fetch('/history').then(res => res.text()).then(data => {
+                chat.innerHTML = data;
+            });
+        };
+
         ws.onmessage = event => {
+            console.log("Received WebSocket message:", event.data);
             var li = document.createElement('li');
             li.innerHTML = event.data;
-            document.getElementById('chat').appendChild(li);
+            chat.appendChild(li);
         };
+
         function sendMessage() {
-            ws.send(document.getElementById('msg').value);
+            let nickname = nameInput.value || "Guest";
+            let message = nickname + " (" + nodeID + "): " + msgInput.value;
+            ws.send(message);
+            msgInput.value = ""
+            msgInput.focus()
         }
     </script>
 </body>
@@ -67,7 +115,23 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 void handleRoot() {
-    server.send(200, "text/html", htmlPage);
+    String page = htmlPage;
+    page.replace("%NODE_ID%", nodeID);  // Replace with actual Node ID
+    server.send(200, "text/html", page);
+}
+
+void handleHistory() {
+    server.send(200, "text/html", loadMessages());
+}
+
+void clearHistory() {
+    if (SPIFFS.remove("/chatlog.txt")) {
+        Serial.println("Chat log deleted successfully.");
+        server.send(200, "text/plain", "Chat log deleted successfully.");
+    } else {
+        Serial.println("Failed to delete chat log.");
+        server.send(500, "text/plain", "Failed to delete chat log.");
+    }
 }
 
 void setup() {
@@ -81,8 +145,15 @@ void setup() {
     Serial.print("IP Address: ");
     Serial.println(WiFi.softAPIP());
 
-    SPI.begin(5, 19, 27, 18);  // (SCK, MISO, MOSI, SS)
-    LoRa.setPins(18, 14, 26);  // (SS, RST, DIO0)
+    if (!SPIFFS.begin(true)) {
+        Serial.println("SPIFFS Initialization Failed!");
+    }
+
+    nodeID = String((uint32_t)ESP.getEfuseMac(), HEX);
+    Serial.println("Node ID: " + nodeID);
+
+    SPI.begin(5, 19, 27, 18);
+    LoRa.setPins(18, 14, 26);
 
     if (!LoRa.begin(868E6)) {
         Serial.println("LoRa Init Failed! Running without LoRa...");
@@ -91,6 +162,8 @@ void setup() {
     }
 
     server.on("/", handleRoot);
+    server.on("/history", handleHistory);
+    server.on("/clearHistory", clearHistory);
     server.begin();
     Serial.println("Web Server Started!");
 
