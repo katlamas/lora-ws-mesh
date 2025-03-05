@@ -159,6 +159,16 @@ void setup() {
         Serial.println("LoRa Init Failed! Running without LoRa...");
     } else {
         Serial.println("LoRa Started!");
+        
+        // Set LoRa Spreading Factor (SF)
+        // Lower SF (e.g., 6) → Faster speed, shorter range
+        // Higher SF (e.g., 12) → Longer range, slower transmission
+        LoRa.setSpreadingFactor(10);
+
+        // Set LoRa Transmission Power (TxPower)
+        // Lower power (e.g., 2 dBm) → Saves battery, shorter range
+        // Higher power (e.g., 20 dBm) → Better range, higher battery usage
+        LoRa.setTxPower(17);
     }
 
     server.on("/", handleRoot);
