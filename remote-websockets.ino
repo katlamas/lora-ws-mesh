@@ -22,6 +22,7 @@ AES128 aes;
 // 16-byte (128-bit) secret key - must be the same on all devices
 uint8_t aesKey[16] = { 0x54, 0x68, 0x69, 0x73, 0x49, 0x73, 0x41, 0x53, 0x65, 0x63, 0x72, 0x65, 0x74, 0x4B, 0x65, 0x79 };
 
+// Encrypts a message using AES-128
 void encryptMessage(String plainText, uint8_t *encryptedData) {
     uint8_t plainBytes[16] = {0};
     plainText.getBytes(plainBytes, 16);
@@ -29,6 +30,7 @@ void encryptMessage(String plainText, uint8_t *encryptedData) {
     aes.encryptBlock(encryptedData, plainBytes);
 }
 
+// Decrypts a message using AES-128
 String decryptMessage(uint8_t *encryptedData) {
     uint8_t decryptedBytes[16] = {0};
     aes.setKey(aesKey, 16);
@@ -36,6 +38,7 @@ String decryptMessage(uint8_t *encryptedData) {
     return String((char *)decryptedBytes);
 }
 
+// Saves an encrypted message to SPIFFS storage
 void saveMessage(const String &message) {
     uint8_t encryptedData[16] = {0};
     encryptMessage(message, encryptedData);
@@ -46,6 +49,7 @@ void saveMessage(const String &message) {
     }
 }
 
+// Loads and decrypts chat history from SPIFFS storage
 String loadMessages() {
     File file = SPIFFS.open("/chatlog.txt", "r");
     String history = "";
@@ -59,20 +63,23 @@ String loadMessages() {
     return history;
 }
 
+// Handles incoming WebSocket messages
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
     if (type == WStype_TEXT) {
         String message = String((char *)payload);
         Serial.println("Received from WebSocket: " + message);
 
+        // Send the message via LoRa
         LoRa.beginPacket();
         LoRa.print(message);
         LoRa.endPacket();
 
-        saveMessage(message);
-        webSocket.broadcastTXT(message);
+        saveMessage(message);  // Save message to local storage
+        webSocket.broadcastTXT(message);  // Broadcast message to all WebSocket clients
     }
 }
 
+// Receives incoming LoRa messages and forwards them to WebSockets
 void receiveLoRaMessages() {
     int packetSize = LoRa.parsePacket();
     if (packetSize) {
@@ -87,6 +94,7 @@ void receiveLoRaMessages() {
     }
 }
 
+// Web interface to send messages and see chat log
 const char htmlPage[] PROGMEM = R"rawliteral(
 <html>
 <head>
@@ -137,16 +145,19 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+// Serves the web interface
 void handleRoot() {
     String page = htmlPage;
     page.replace("%NODE_ID%", nodeID);  // Replace with actual Node ID
     server.send(200, "text/html", page);
 }
 
+// Serves chat history to web clients
 void handleHistory() {
     server.send(200, "text/html", loadMessages());
 }
 
+// Clears the chat log stored in SPIFFS
 void clearHistory() {
     if (SPIFFS.remove("/chatlog.txt")) {
         Serial.println("Chat log deleted successfully.");
@@ -162,6 +173,7 @@ void setup() {
     while (!Serial);
     Serial.println("Hello, World! LilyGO LoRa is connected.");
 
+    // Generate a unique node ID based on the ESP32 MAC address
     uint64_t chipID = ESP.getEfuseMac();  // Get unique 64-bit MAC address
     char nodeIDBuffer[13];  // Buffer for 12 hex characters + null terminator
     sprintf(nodeIDBuffer, "%012llX", chipID);
@@ -171,6 +183,7 @@ void setup() {
     String ssid = "LoRa_Chat_AP_" + nodeID;
     const char *password = "12345678";  
 
+    // Setup WiFi Access Point
     WiFi.softAP(ssid, password);
     Serial.println("WiFi AP Started: ");
     Serial.println(ssid);
@@ -181,6 +194,7 @@ void setup() {
         Serial.println("SPIFFS Initialization Failed!");
     }
 
+    // Initialize LoRa module
     SPI.begin(5, 19, 27, 18);
     LoRa.setPins(18, 14, 26);
 
@@ -200,6 +214,7 @@ void setup() {
         LoRa.setTxPower(17);
     }
 
+    // Start Web Server and WebSocket
     server.on("/", handleRoot);
     server.on("/history", handleHistory);
     server.on("/clearHistory", clearHistory);
@@ -212,8 +227,8 @@ void setup() {
 }
 
 void loop() {
-    server.handleClient();
-    webSocket.loop();
-    receiveLoRaMessages();
+    server.handleClient();  // Handle HTTP requests
+    webSocket.loop();  // Handle WebSocket events
+    receiveLoRaMessages();  // Check for incoming LoRa messages
     delay(100);
 }
