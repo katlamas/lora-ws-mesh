@@ -4,9 +4,9 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <SPIFFS.h>
-
-const char *ssid = "LoRa_Chat_AP_2";  
-const char *password = "12345678";  
+#include <Crypto.h>
+#include <AES.h>
+#include <Base64.h>
 
 WebServer server(80);  
 WebSocketsServer webSocket(81);  // WebSockets on port 81
@@ -17,10 +17,31 @@ WebSocketsServer webSocket(81);  // WebSockets on port 81
 
 String nodeID;
 
+AES128 aes;
+
+// 16-byte (128-bit) secret key - must be the same on all devices
+uint8_t aesKey[16] = { 0x54, 0x68, 0x69, 0x73, 0x49, 0x73, 0x41, 0x53, 0x65, 0x63, 0x72, 0x65, 0x74, 0x4B, 0x65, 0x79 };
+
+void encryptMessage(String plainText, uint8_t *encryptedData) {
+    uint8_t plainBytes[16] = {0};
+    plainText.getBytes(plainBytes, 16);
+    aes.setKey(aesKey, 16);
+    aes.encryptBlock(encryptedData, plainBytes);
+}
+
+String decryptMessage(uint8_t *encryptedData) {
+    uint8_t decryptedBytes[16] = {0};
+    aes.setKey(aesKey, 16);
+    aes.decryptBlock(decryptedBytes, encryptedData);
+    return String((char *)decryptedBytes);
+}
+
 void saveMessage(const String &message) {
+    uint8_t encryptedData[16] = {0};
+    encryptMessage(message, encryptedData);
     File file = SPIFFS.open("/chatlog.txt", "a");
     if (file) {
-        file.println(message);
+        file.write(encryptedData, 16);
         file.close();
     }
 }
@@ -29,8 +50,9 @@ String loadMessages() {
     File file = SPIFFS.open("/chatlog.txt", "r");
     String history = "";
     if (file) {
-        while (file.available()) {
-            history += file.readStringUntil('\n') + "<br>";
+        uint8_t encryptedData[16];
+        while (file.read(encryptedData, 16) == 16) {
+            history += decryptMessage(encryptedData) + "<br>";
         }
         file.close();
     }
@@ -78,6 +100,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <h1>LoRa Chat</h1>
+    <h2>Node %NODE_ID%</h2>
     <input id='nickname' placeholder='Enter nickname'>
     <input id='msg' placeholder='Type a message'>
     <button onclick='sendMessage()'>Send</button>
@@ -104,7 +127,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
 
         function sendMessage() {
             let nickname = nameInput.value || "Guest";
-            let message = nickname + " (" + nodeID + "): " + msgInput.value;
+            let message = nickname + ": " + msgInput.value;
             ws.send(message);
             msgInput.value = ""
             msgInput.focus()
@@ -139,6 +162,15 @@ void setup() {
     while (!Serial);
     Serial.println("Hello, World! LilyGO LoRa is connected.");
 
+    uint64_t chipID = ESP.getEfuseMac();  // Get unique 64-bit MAC address
+    char nodeIDBuffer[13];  // Buffer for 12 hex characters + null terminator
+    sprintf(nodeIDBuffer, "%012llX", chipID);
+    nodeID = String(nodeIDBuffer);
+    Serial.println("Node ID: " + nodeID);
+
+    String ssid = "LoRa_Chat_AP_" + nodeID;
+    const char *password = "12345678";  
+
     WiFi.softAP(ssid, password);
     Serial.println("WiFi AP Started: ");
     Serial.println(ssid);
@@ -148,9 +180,6 @@ void setup() {
     if (!SPIFFS.begin(true)) {
         Serial.println("SPIFFS Initialization Failed!");
     }
-
-    nodeID = String((uint32_t)ESP.getEfuseMac(), HEX);
-    Serial.println("Node ID: " + nodeID);
 
     SPI.begin(5, 19, 27, 18);
     LoRa.setPins(18, 14, 26);
